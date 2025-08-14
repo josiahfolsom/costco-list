@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Costco Shopping List (Public)</title>
+    
+    <!-- Firebase SDK Scripts -->
+    <script type="module">
+        // Import the functions you need from the SDKs
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, addDoc, doc, updateDoc, deleteDoc, query, setDoc, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Your web app's Firebase configuration
+        const firebaseConfig = {
+          apiKey: "AIzaSyDuD1njiJ0zfRMWgCuQEvldCNNiN6ZcPx0",
+          authDomain: "costco-list-data.firebaseapp.com",
+          projectId: "costco-list-data",
+          storageBucket: "costco-list-data.appspot.com",
+          messagingSenderId: "461334182204",
+          appId: "1:461334182204:web:9a0849745d41e8c41bc639",
+          measurementId: "G-REJQK4B1G3"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // --- App Logic ---
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- Element References ---
+            const itemInput = document.getElementById('item-input');
+            const priceInput = document.getElementById('price-input');
+            const quantityInput = document.getElementById('quantity-input');
+            const addBtn = document.getElementById('add-btn');
+            const shoppingListEl = document.getElementById('shopping-list');
+            const totalCostEl = document.getElementById('total-cost');
+            const historyListEl = document.getElementById('history-list');
+            const tabNav = document.querySelector('.tab-nav');
+            const sortBar = document.querySelector('.sort-bar');
+            const loadingIndicator = document.getElementById('loading');
+            const appContent = document.getElementById('app-content');
+            const itemSuggestionsEl = document.getElementById('item-suggestions');
+
+            // --- App State ---
+            let shoppingList = [];
+            let priceHistory = {};
+            let currentSort = 'added';
+            let isAuthenticated = false;
+
+            // --- Helper Function ---
+            const toTitleCase = (str) => {
+                if (!str) return "";
+                return str.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
+            };
+
+            // --- Authentication ---
+            onAuthStateChanged(auth, user => {
+                if (user) {
+                    isAuthenticated = true;
+                    loadingIndicator.style.display = 'none';
+                    appContent.style.display = 'block';
+                    setupRealtimeListeners();
+                } else {
+                    signInAnonymously(auth).catch(error => {
+                        console.error("Anonymous sign-in failed:", error);
+                        loadingIndicator.textContent = 'Error connecting. Please check your Firebase setup.';
+                    });
+                }
+            });
+
+            // --- Real-time Data Listeners ---
+            function setupRealtimeListeners() {
+                if (!isAuthenticated) return;
+
+                const listQuery = query(collection(db, 'public-list'));
+                onSnapshot(listQuery, (snapshot) => {
+                    shoppingList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    renderList();
+                });
+
+                const historyQuery = query(collection(db, 'public-priceHistory'));
+                onSnapshot(historyQuery, (snapshot) => {
+                    priceHistory = {};
+                    snapshot.docs.forEach(doc => {
+                        const data = doc.data();
+                        if (data && data.entries) {
+                            priceHistory[doc.id] = data.entries;
+                        }
+                    });
+                    renderAutocomplete(); 
+                    if (document.querySelector('.tab-btn[data-tab="history"]').classList.contains('active')) {
+                        renderHistory();
+                    }
+                });
+            }
+
+            // --- Firestore Data Functions ---
+            const addItem = async () => {
+                const rawItemName = itemInput.value.trim();
+                if (!rawItemName || !isAuthenticated) return;
+                const itemName = toTitleCase(rawItemName);
+                const itemPrice = parseFloat(priceInput.value) || 0;
+                const itemQuantity = parseInt(quantityInput.value, 10) || 1;
+
+                try {
+                    await addDoc(collection(db, 'public-list'), {
+                        dateAdded: Date.now(),
+                        name: itemName,
+                        price: itemPrice,
+                        quantity: itemQuantity,
+                        checked: false
+                    });
+                    updatePriceHistory(itemName, itemPrice);
+                    itemInput.value = '';
+                    priceInput.value = '';
+                    quantityInput.value = '1';
+                    itemInput.focus();
+                } catch (error) {
+                    console.error("Error adding item: ", error);
+                }
+            };
+            
+            const updateItem = async (itemId, updatedData) => {
+                if (!isAuthenticated) return;
+                const itemRef = doc(db, 'public-list', itemId);
+                await updateDoc(itemRef, updatedData);
+            };
+
+            const deleteItem = async (itemId) => {
+                if (!isAuthenticated) return;
+                await deleteDoc(doc(db, 'public-list', itemId));
+            };
+
+            const updatePriceHistory = async (itemName, newPrice) => {
+                if (newPrice <= 0 || !isAuthenticated) return;
+                const historyRef = doc(db, 'public-priceHistory', itemName);
+                try {
+                    await runTransaction(db, async (transaction) => {
+                        const historyDoc = await transaction.get(historyRef);
+                        const currentHistory = historyDoc.exists() ? historyDoc.data().entries : [];
+                        const today = new Date().toISOString().split('T')[0];
+                        const newEntry = { price: newPrice, date: today };
+                        if (currentHistory.length > 0 && currentHistory[0].date === today && currentHistory[0].price === newPrice) return;
+                        const updatedHistory = [newEntry, ...currentHistory].slice(0, 10);
+                        transaction.set(historyRef, { entries: updatedHistory }, { merge: true });
+                    });
+                } catch (e) {
+                    console.error("Price history transaction failed: ", e);
+                }
+            };
+            
+            // --- Rendering Functions ---
+            const renderAutocomplete = () => {
+                if (!itemSuggestionsEl) return;
+                itemSuggestionsEl.innerHTML = '';
+                Object.keys(priceHistory).forEach(itemName => {
+                    const option = document.createElement('option');
+                    option.value = itemName;
+                    itemSuggestionsEl.appendChild(option);
+                });
+            };
+
+            const getCategory = (itemName) => {
+                const name = itemName.toLowerCase();
+                if (['apple', 'avocado', 'banana', 'berries', 'blueberries', 'broccoli', 'cabbage', 'carrots', 'celery', 'cherries', 'cucumber', 'dates', 'garlic', 'grapes', 'lemon', 'lettuce', 'mango', 'mushrooms', 'onions', 'orange', 'peaches', 'pepper', 'pineapple', 'potatoes', 'raspberries', 'salad', 'spinach', 'sprouts', 'strawberries', 'tomatoes', 'watermelon', 'zucchini'].some(k => name.includes(k))) return 'Produce';
+                if (['bacon', 'beef', 'brats', 'chicken', 'fish', 'ground beef', 'ham', 'lamb', 'meatballs', 'pork', 'ribs', 'salami', 'salmon', 'sausage', 'shrimp', 'steak', 'tuna'].some(k => name.includes(k))) return 'Meat & Seafood';
+                if (['bagel', 'bread', 'brioche', 'buns', 'cake', 'croissant', 'english muffins', 'muffins', 'pie', 'rolls'].some(k => name.includes(k))) return 'Bakery';
+                if (['butter', 'cheese', 'cottage cheese', 'cream cheese', 'creamer', 'dubliner', 'eggs', 'half n half', 'heavy cream', 'manchego', 'milk', 'romano', 'sour cream', 'yogurt', 'yoggies'].some(k => name.includes(k))) return 'Dairy & Eggs';
+                if (['frozen', 'frzn', 'ice cream', 'nuggets', 'pizza', 'popsicle', 'pot-stickers', 'ravioli', 'waffles', 'wontons'].some(k => name.includes(k))) return 'Frozen Foods';
+                if (['bars', 'cheez-its', 'chips', 'chomps', 'cookies', 'crackers', 'fig bar', 'goldfish', 'granola', 'jerky', 'nuts', 'popcorn', 'pretzels', 'seeds', 'snack'].some(k => name.includes(k))) return 'Snacks';
+                if (['bullion', 'brownie mix', 'cereal', 'chia', 'chocolate chips', 'cholula', 'cinnamon', 'coffee', 'curry', 'dressing', 'flour', 'honey', 'jelly', 'ketchup', 'mac & cheese', 'maple syrup', 'marinara', 'matcha', 'mayonnaise', 'mustard', 'nut butter', 'nutella', 'oats', 'olive oil', 'pancake mix', 'paprika', 'pasta', 'peanut butter', 'pesto', 'pickles', 'ramen', 'rice', 'salt', 'sauce', 'seasoning', 'soy sauce', 'stock', 'sugar', 'taco seasoning', 'tomato sauce'].some(k => name.includes(k))) return 'Pantry';
+                if (['baby wipes', 'cleaner', 'detergent', 'diapers', 'dish soap', 'dishwasher', 'floss', 'flonase', 'hand soap', 'laundry', 'paper towels', 'plates', 'pull-ups', 'soap', 'stain remover', 'tissue', 'toilet paper', 'toothpaste', 'trash bags', 'ziploc'].some(k => name.includes(k))) return 'Household & Baby';
+                if (['body armor', 'celsius', 'coconut water', 'juice', 'spindrift', 'waterloo'].some(k => name.includes(k))) return 'Drinks';
+                return 'Miscellaneous';
+            };
+
+            const switchTab = (tabName) => {
+                document.querySelectorAll('.tab-content, .tab-btn').forEach(el => el.classList.remove('active'));
+                document.getElementById(`${tabName}-content`).classList.add('active');
+                document.querySelector(`.tab-btn[data-tab="${tabName}"]`).classList.add('active');
+                if (tabName === 'history') renderHistory();
+            };
+            
+            const renderHistory = () => {
+                historyListEl.innerHTML = '';
+                const historyItems = Object.keys(priceHistory);
+                if (historyItems.length === 0) {
+                    historyListEl.innerHTML = `<li class="empty-state">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        <h3>No Price History Yet</h3>
+                        <p>When you add items with prices, their history will appear here.</p>
+                    </li>`;
+                    return;
+                }
+                historyItems.sort().forEach(itemName => {
+                    const latestEntry = priceHistory[itemName][0];
+                    const li = document.createElement('li');
+                    li.className = 'history-item';
+                    li.innerHTML = `<div class="history-item-name">${itemName}</div><div class="history-item-details">Latest: $${latestEntry.price.toFixed(2)} on ${latestEntry.date}</div>`;
+                    historyListEl.appendChild(li);
+                });
+            };
+
+            const renderList = () => {
+                shoppingListEl.innerHTML = '';
+                let runningTotal = 0;
+                let lastCategory = null;
+
+                if (shoppingList.length === 0) {
+                    shoppingListEl.innerHTML = `<li class="empty-state">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 3h1.386c.51 0 .955.343 1.087.835l.383 1.437M7.5 14.25a3 3 0 00-3 3h15.75m-12.75-3h11.218c.51 0 .962-.343 1.087-.835l3.838-14.372H2.25" /></svg>
+                        <h3>Your List is Empty</h3>
+                        <p>Use the form above to add items to your shopping list.</p>
+                    </li>`;
+                    totalCostEl.textContent = 'Total: $0.00';
+                    return;
+                }
+
+                const sortedList = [...shoppingList].sort((a, b) => {
+                    if (currentSort === 'alpha') return a.name.localeCompare(b.name);
+                    if (currentSort === 'category') {
+                        const catA = getCategory(a.name);
+                        const catB = getCategory(b.name);
+                        return catA === catB ? a.name.localeCompare(b.name) : catA.localeCompare(catB);
+                    }
+                    return a.dateAdded - b.dateAdded;
+                });
+
+                sortedList.forEach((item) => {
+                    runningTotal += (parseFloat(item.price) || 0) * (parseInt(item.quantity, 10) || 1);
+
+                    if (currentSort === 'category' && getCategory(item.name) !== lastCategory) {
+                        lastCategory = getCategory(item.name);
+                        const header = document.createElement('li');
+                        header.className = 'category-header';
+                        header.textContent = lastCategory;
+                        shoppingListEl.appendChild(header);
+                    }
+
+                    const li = document.createElement('li');
+                    li.className = 'list-item';
+                    if (item.checked) li.classList.add('checked');
+
+                    const textContainer = document.createElement('div');
+                    textContainer.className = 'item-text-container';
+                    textContainer.addEventListener('click', () => updateItem(item.id, { checked: !item.checked }));
+                    
+                    textContainer.innerHTML = `<span class="item-name">${item.name}</span> <span class="item-quantity">(x${item.quantity})</span>`;
+                    li.appendChild(textContainer);
+
+                    const priceContainer = document.createElement('div');
+                    priceContainer.className = 'price-container';
+                    const priceSpan = document.createElement('span');
+                    priceSpan.className = 'item-price';
+                    priceSpan.textContent = `$${item.price.toFixed(2)}`;
+                    priceContainer.appendChild(priceSpan);
+                    li.appendChild(priceContainer);
+
+                    priceSpan.addEventListener('click', () => {
+                        const priceInputEl = document.createElement('input');
+                        priceInputEl.type = 'number';
+                        priceInputEl.className = 'item-price-input';
+                        priceInputEl.value = item.price.toFixed(2);
+                        priceContainer.replaceChild(priceInputEl, priceSpan);
+                        priceInputEl.focus();
+
+                        const savePrice = () => {
+                            const newPrice = parseFloat(priceInputEl.value) || 0;
+                            updateItem(item.id, { price: newPrice });
+                            updatePriceHistory(item.name, newPrice);
+                        };
+                        priceInputEl.addEventListener('blur', savePrice);
+                        priceInputEl.addEventListener('keypress', (e) => {
+                            if (e.key === 'Enter') priceInputEl.blur();
+                        });
+                    });
+                    
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = 'delete-btn';
+                    deleteBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.58.22-2.365.468a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193v-.443A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clip-rule="evenodd" /></svg>`;
+                    deleteBtn.addEventListener('click', (e) => {
+                        e.stopPropagation(); 
+                        deleteItem(item.id);
+                    });
+                    
+                    li.appendChild(deleteBtn);
+                    shoppingListEl.appendChild(li);
+                });
+
+                totalCostEl.textContent = `Total: $${runningTotal.toFixed(2)}`;
+            };
+            
+            // --- Event Listeners ---
+            addBtn.addEventListener('click', addItem);
+            [priceInput, quantityInput].forEach(input => {
+                input.addEventListener('keypress', (e) => { if (e.key === 'Enter') addItem(); });
+            });
+            itemInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') addItem(); });
+            itemInput.addEventListener('input', (e) => {
+                const selectedItemName = e.target.value;
+                if (priceHistory[selectedItemName]) {
+                    const latestEntry = priceHistory[selectedItemName][0];
+                    if (latestEntry && typeof latestEntry.price === 'number') {
+                        priceInput.value = latestEntry.price.toFixed(2);
+                    }
+                }
+            });
+            
+            tabNav.addEventListener('click', (e) => {
+                if (e.target.matches('.tab-btn')) switchTab(e.target.dataset.tab);
+            });
+            sortBar.addEventListener('click', (e) => {
+                if (e.target.matches('.sort-btn')) {
+                    currentSort = e.target.dataset.sort;
+                    sortBar.querySelectorAll('.sort-btn').forEach(btn => btn.classList.remove('active'));
+                    e.target.classList.add('active');
+                    renderList();
+                }
+            });
+        });
+    </script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f4f9; color: #333; margin: 0; padding: 20px; display: flex; justify-content: center; }
+        .container { width: 100%; max-width: 600px; background: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #005f9e; text-align: center; margin-top: 0; }
+        .tab-nav { display: flex; border-bottom: 2px solid #eee; margin-bottom: 20px; }
+        .tab-btn { flex-grow: 1; padding: 10px 15px; border: none; background-color: transparent; cursor: pointer; font-size: 1.1em; color: #666; border-bottom: 3px solid transparent; transition: color 0.2s, border-color 0.2s; }
+        .tab-btn.active { color: #005f9e; border-bottom-color: #005f9e; font-weight: bold; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .input-area { display: grid; grid-template-columns: 1fr auto auto auto; gap: 10px; margin-bottom: 20px; align-items: center; }
+        #item-input, #price-input, #quantity-input { padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 1em; }
+        #price-input { width: 80px; }
+        #quantity-input { width: 60px; }
+        #add-btn { padding: 10px 15px; border: none; background-color: #e53238; color: white; border-radius: 4px; cursor: pointer; font-weight: bold; height: 100%; }
+        .sort-bar { display: flex; gap: 10px; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #eee; }
+        .sort-btn { padding: 8px 12px; border: 1px solid #ddd; background-color: #f8f9fa; border-radius: 4px; cursor: pointer; }
+        .sort-btn.active { background-color: #005f9e; color: white; border-color: #005f9e; }
+        #shopping-list, #history-list { list-style: none; padding: 0; margin: 0; }
+        .category-header { font-weight: bold; color: #005f9e; background-color: #f4f4f9; padding: 8px 10px; margin-top: 10px; border-radius: 4px; }
+        .list-item { display: flex; align-items: center; padding: 12px 10px; border-bottom: 1px solid #eee; font-size: 1.1em; }
+        .item-text-container { cursor: pointer; flex-grow: 1; }
+        .item-name { font-weight: 600; }
+        .item-quantity { color: #666; font-size: 0.9em; margin-left: 4px; }
+        .list-item.checked .item-name, .list-item.checked .item-quantity { text-decoration: line-through; color: #aaa; }
+        .price-container { margin-left: auto; text-align: right; }
+        .item-price { cursor: pointer; padding: 5px; border-radius: 4px; transition: background-color 0.2s; }
+        .item-price:hover { background-color: #f0f0f0; }
+        .item-price-input { width: 80px; font-size: 1em; text-align: right; border: 1px solid #005f9e; background-color: #f8f9fa; border-radius: 4px; padding: 5px; }
+        .delete-btn { background: none; border: none; color: #aaa; cursor: pointer; padding: 5px; margin-left: 8px; }
+        .delete-btn svg { width: 20px; height: 20px; }
+        .delete-btn:hover { color: #e53238; }
+        #total-cost { text-align: right; font-size: 1.4em; font-weight: bold; margin-top: 20px; color: #005f9e; }
+        .history-item { padding: 10px; border-bottom: 1px solid #eee; }
+        .history-item-name { font-weight: bold; font-size: 1.1em; }
+        .history-item-details { font-size: 0.9em; color: #666; }
+        #loading { text-align: center; padding: 40px; font-size: 1.2em; color: #666; }
+        .empty-state { text-align: center; padding: 40px 20px; color: #888; }
+        .empty-state svg { width: 48px; height: 48px; margin-bottom: 10px; color: #ccc; }
+        .empty-state h3 { margin: 0 0 5px 0; color: #666; }
+        .empty-state p { margin: 0; font-size: 0.9em; }
+
+        @media (max-width: 500px) {
+            body { padding: 10px; }
+            .container { padding: 15px; }
+            h1 { font-size: 1.5em; }
+            .input-area { grid-template-columns: 1fr; gap: 10px; }
+            #price-input, #quantity-input { width: 100%; box-sizing: border-box; }
+            .sort-bar { flex-wrap: wrap; justify-content: center; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🛒 Costco List</h1>
+        <div id="loading">Connecting to your list...</div>
+        
+        <div id="app-content" style="display: none;">
+            <div class="tab-nav">
+                <button class="tab-btn active" data-tab="list">Shopping List</button>
+                <button class="tab-btn" data-tab="history">Price History</button>
+            </div>
+            <div id="list-content" class="tab-content active">
+                <div class="input-area">
+                    <input type="text" id="item-input" list="item-suggestions" placeholder="e.g., Rotisserie Chicken">
+                    <input type="number" id="quantity-input" value="1" min="1" placeholder="Qty">
+                    <input type="number" id="price-input" placeholder="Price" min="0" step="0.01">
+                    <button id="add-btn">Add</button>
+                </div>
+                <div class="sort-bar">
+                    <span>Sort by:</span>
+                    <button class="sort-btn active" data-sort="added">Added</button>
+                    <button class="sort-btn" data-sort="alpha">A-Z</button>
+                    <button class="sort-btn" data-sort="category">Category</button>
+                </div>
+                <ul id="shopping-list"></ul>
+                <div id="total-cost">Total: $0.00</div>
+            </div>
+            <div id="history-content" class="tab-content">
+                <ul id="history-list"></ul>
+            </div>
+        </div>
+        <datalist id="item-suggestions"></datalist>
+    </div>
+</body>
+</html>
