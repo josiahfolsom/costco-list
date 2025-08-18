@@ -338,7 +338,7 @@
 
                 if (historyItems.length === 0) {
                     historyListEl.innerHTML = `<li class="empty-state">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" /></svg>
                         <h3>No Price History Yet</h3>
                         <p>When you add items with prices, their history will appear here.</p>
                     </li>`;
@@ -384,7 +384,7 @@
 
                 if (shoppingList.length === 0) {
                     shoppingListEl.innerHTML = `<li class="empty-state">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 3h1.386c.51 0 .955.343 1.087.835l.383 1.437M7.5 14.25a3 3 0 00-3 3h15.75m-12.75-3h11.218c.51 0 .962-.343 1.087-.835l3.838-14.372H2.25" /></svg>
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 18.75a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 01-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h1.125c.621 0 1.125-.504 1.125-1.125V14.25m-17.25 4.5v-1.875a3.375 3.375 0 013.375-3.375h9.75a3.375 3.375 0 013.375 3.375v1.875m-17.25 4.5h16.5M6 12V6a3 3 0 013-3h3a3 3 0 013 3v6m-1.5-1.5h-5.25m5.25 0l-1.5-1.5m1.5 1.5l-1.5 1.5" /></svg>
                         <h3>Your List is Empty</h3>
                         <p>Use the form above to add items to your shopping list.</p>
                     </li>`;
@@ -615,6 +615,16 @@
                 const newLocation = toTitleCase(newLocationNameInput.value.trim());
                 if (newLocation) {
                     await setDoc(doc(db, 'locations', newLocation), { created: Date.now() });
+                    const sourceLocation = "Tukwila WA";
+                    const sourceHistoryRef = collection(db, 'locations', sourceLocation, 'priceHistory');
+                    const sourceHistorySnapshot = await getDocs(sourceHistoryRef);
+                    const batch = writeBatch(db);
+                    sourceHistorySnapshot.forEach(docSnapshot => {
+                        const newDocRef = doc(db, 'locations', newLocation, 'priceHistory', docSnapshot.id);
+                        batch.set(newDocRef, docSnapshot.data());
+                    });
+                    await batch.commit();
+                    
                     newLocationNameInput.value = '';
                     addLocationModal.classList.add('hidden');
                 }
@@ -626,6 +636,7 @@
         .container { width: 100%; max-width: 600px; background: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
         h1 { color: #005f9e; text-align: center; margin-top: 0; }
         .location-bar { display: flex; gap: 10px; margin-bottom: 15px; align-items: center; }
+        .location-bar label { font-weight: bold; color: #333; }
         #location-select { flex-grow: 1; padding: 8px; border-radius: 4px; border: 1px solid #ddd; font-size: 1em; }
         #add-location-btn { padding: 8px 12px; font-size: 1.2em; }
         .tab-nav { display: flex; border-bottom: 2px solid #eee; margin-bottom: 20px; }
@@ -707,6 +718,7 @@
         
         <div id="app-content" style="display: none;">
             <div class="location-bar">
+                <label for="location-select">Select Your Warehouse:</label>
                 <select id="location-select"></select>
                 <button id="add-location-btn" class="sort-btn">+</button>
             </div>
