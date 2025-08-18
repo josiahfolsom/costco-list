@@ -10,7 +10,7 @@
         // Import the functions you need from the SDKs
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, onSnapshot, addDoc, doc, updateDoc, deleteDoc, query, setDoc, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, onSnapshot, addDoc, doc, updateDoc, deleteDoc, query, setDoc, runTransaction, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Your web app's Firebase configuration
         const firebaseConfig = {
@@ -42,7 +42,11 @@
             const sortBar = document.querySelector('.sort-bar');
             const loadingIndicator = document.getElementById('loading');
             const appContent = document.getElementById('app-content');
-            const suggestionsContainer = document.getElementById('suggestions-container'); // NEW: Custom suggestions box
+            const suggestionsContainer = document.getElementById('suggestions-container');
+            const clearListBtn = document.getElementById('clear-list-btn'); // NEW: Clear list button
+            const confirmationModal = document.getElementById('confirmation-modal'); // NEW: Confirmation modal
+            const confirmClearBtn = document.getElementById('confirm-clear-btn'); // NEW
+            const cancelClearBtn = document.getElementById('cancel-clear-btn'); // NEW
 
             // --- App State ---
             let shoppingList = [];
@@ -116,7 +120,7 @@
                     itemInput.value = '';
                     priceInput.value = '';
                     quantityInput.value = '1';
-                    suggestionsContainer.innerHTML = ''; // Clear suggestions
+                    suggestionsContainer.innerHTML = '';
                     itemInput.focus();
                 } catch (error) {
                     console.error("Error adding item: ", error);
@@ -132,6 +136,21 @@
             const deleteItem = async (itemId) => {
                 if (!isAuthenticated) return;
                 await deleteDoc(doc(db, 'public-list', itemId));
+            };
+
+            // NEW: Function to clear the entire shopping list
+            const clearList = async () => {
+                if (!isAuthenticated) return;
+                console.log("Clearing all items from the list...");
+                const listCollection = collection(db, 'public-list');
+                const listSnapshot = await getDocs(listCollection);
+                const deletePromises = [];
+                listSnapshot.forEach(doc => {
+                    deletePromises.push(deleteDoc(doc.ref));
+                });
+                await Promise.all(deletePromises);
+                console.log("List cleared.");
+                confirmationModal.classList.add('hidden');
             };
 
             const updatePriceHistory = async (itemName, newPrice) => {
@@ -161,7 +180,7 @@
                 if (['butter', 'cheese', 'cottage cheese', 'cream cheese', 'creamer', 'dubliner', 'eggs', 'half n half', 'heavy cream', 'manchego', 'milk', 'romano', 'sour cream', 'yogurt', 'yoggies'].some(k => name.includes(k))) return 'Dairy & Eggs';
                 if (['frozen', 'frzn', 'ice cream', 'nuggets', 'pizza', 'popsicle', 'pot-stickers', 'ravioli', 'waffles', 'wontons'].some(k => name.includes(k))) return 'Frozen Foods';
                 if (['bars', 'cheez-its', 'chips', 'chomps', 'cookies', 'crackers', 'fig bar', 'goldfish', 'granola', 'jerky', 'nuts', 'popcorn', 'pretzels', 'seeds', 'snack'].some(k => name.includes(k))) return 'Snacks';
-                if (['bullion', 'brownie mix', 'cereal', 'chia', 'chocolate chips', 'cholula', 'cinnamon', 'coffee', 'curry', 'dressing', 'flour', 'honey', 'jelly', 'ketchup', 'mac & cheese', 'maple syrup', 'marinara', 'matcha', 'mayonnaise', 'mustard', 'nut butter', 'nutella', 'oats', 'olive oil', 'pancake mix', 'paprika', 'pasta', 'peanut butter', 'pesto', 'pickles', 'ramen', 'rice', 'salt', 'sauce', 'seasoning', 'soy sauce', 'stock', 'sugar', 'taco seasoning', 'tomato sauce'].some(k => name.includes(k))) return 'Pantry';
+                if (['bullion', 'brownie mix', 'cereal', 'chia', 'chocolate chips', 'cholula', 'cinnamon', 'coffee', 'curry', 'dressing', 'flour', 'honey', 'jelly', 'ketchup', 'mac & cheese', 'maple syrup', 'marinara', 'matcha', 'mayonnaise', 'mustard', 'nut butter', 'nutella', 'oats', 'olive oil', 'pancake mix', 'paprika', 'pasta', 'peanut butter', 'p pesto', 'pickles', 'ramen', 'rice', 'salt', 'sauce', 'seasoning', 'soy sauce', 'stock', 'sugar', 'taco seasoning', 'tomato sauce'].some(k => name.includes(k))) return 'Pantry';
                 if (['baby wipes', 'cleaner', 'detergent', 'diapers', 'dish soap', 'dishwasher', 'floss', 'flonase', 'hand soap', 'laundry', 'paper towels', 'plates', 'pull-ups', 'soap', 'stain remover', 'tissue', 'toilet paper', 'toothpaste', 'trash bags', 'ziploc'].some(k => name.includes(k))) return 'Household & Baby';
                 if (['body armor', 'celsius', 'coconut water', 'juice', 'spindrift', 'waterloo'].some(k => name.includes(k))) return 'Drinks';
                 return 'Miscellaneous';
@@ -290,7 +309,6 @@
             });
             itemInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') addItem(); });
             
-            // **NEW**: Custom autocomplete logic
             itemInput.addEventListener('input', (e) => {
                 const value = e.target.value.toLowerCase();
                 suggestionsContainer.innerHTML = '';
@@ -298,7 +316,7 @@
 
                 const filteredItems = Object.keys(priceHistory)
                     .filter(item => item.toLowerCase().includes(value))
-                    .slice(0, 5); // Show top 5 matches
+                    .slice(0, 5);
 
                 filteredItems.forEach(item => {
                     const div = document.createElement('div');
@@ -318,7 +336,6 @@
                 });
             });
 
-            // Hide suggestions when clicking elsewhere
             document.addEventListener('click', (e) => {
                 if (e.target !== itemInput) {
                     suggestionsContainer.innerHTML = '';
@@ -336,6 +353,15 @@
                     renderList();
                 }
             });
+
+            // NEW: Event listeners for the confirmation modal
+            clearListBtn.addEventListener('click', () => {
+                confirmationModal.classList.remove('hidden');
+            });
+            cancelClearBtn.addEventListener('click', () => {
+                confirmationModal.classList.add('hidden');
+            });
+            confirmClearBtn.addEventListener('click', clearList);
         });
     </script>
     <style>
@@ -347,34 +373,21 @@
         .tab-btn.active { color: #005f9e; border-bottom-color: #005f9e; font-weight: bold; }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
-        /* NEW: Wrapper for input and suggestions */
         .input-wrapper { position: relative; }
         .input-area { display: grid; grid-template-columns: 1fr auto auto auto; gap: 10px; margin-bottom: 20px; align-items: center; }
         #item-input, #price-input, #quantity-input { padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 1em; }
+        #item-input { width: 100%; box-sizing: border-box; }
         #price-input { width: 80px; }
         #quantity-input { width: 60px; }
         #add-btn { padding: 10px 15px; border: none; background-color: #e53238; color: white; border-radius: 4px; cursor: pointer; font-weight: bold; height: 100%; }
-        /* NEW: Custom suggestions styling */
-        #suggestions-container {
-            position: absolute;
-            background-color: white;
-            border: 1px solid #ddd;
-            border-top: none;
-            border-radius: 0 0 4px 4px;
-            width: 100%;
-            box-sizing: border-box;
-            z-index: 10;
-        }
-        .suggestion-item {
-            padding: 10px;
-            cursor: pointer;
-        }
-        .suggestion-item:hover {
-            background-color: #f0f0f0;
-        }
-        .sort-bar { display: flex; gap: 10px; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #eee; }
+        #suggestions-container { position: absolute; background-color: white; border: 1px solid #ddd; border-top: none; border-radius: 0 0 4px 4px; width: 100%; box-sizing: border-box; z-index: 10; }
+        #suggestions-container:empty { border: none; }
+        .suggestion-item { padding: 10px; cursor: pointer; }
+        .suggestion-item:hover { background-color: #f0f0f0; }
+        .sort-bar { display: flex; gap: 10px; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #eee; align-items: center; }
         .sort-btn { padding: 8px 12px; border: 1px solid #ddd; background-color: #f8f9fa; border-radius: 4px; cursor: pointer; }
         .sort-btn.active { background-color: #005f9e; color: white; border-color: #005f9e; }
+        #clear-list-btn { margin-left: auto; background-color: #6c757d; color: white; } /* NEW */
         #shopping-list, #history-list { list-style: none; padding: 0; margin: 0; }
         .category-header { font-weight: bold; color: #005f9e; background-color: #f4f4f9; padding: 8px 10px; margin-top: 10px; border-radius: 4px; }
         .list-item { display: flex; align-items: center; padding: 12px 10px; border-bottom: 1px solid #eee; font-size: 1.1em; }
@@ -398,6 +411,14 @@
         .empty-state svg { width: 48px; height: 48px; margin-bottom: 10px; color: #ccc; }
         .empty-state h3 { margin: 0 0 5px 0; color: #666; }
         .empty-state p { margin: 0; font-size: 0.9em; }
+        /* NEW: Styles for confirmation modal */
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: center; z-index: 20; }
+        .modal-content { background: white; padding: 25px; border-radius: 8px; text-align: center; max-width: 300px; }
+        .modal-buttons { margin-top: 20px; display: flex; justify-content: center; gap: 10px; }
+        .modal-btn { padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
+        #confirm-clear-btn { background-color: #e53238; color: white; }
+        #cancel-clear-btn { background-color: #6c757d; color: white; }
+        .hidden { display: none; }
 
         @media (max-width: 500px) {
             body { padding: 10px; }
@@ -421,7 +442,6 @@
             </div>
             <div id="list-content" class="tab-content active">
                 <div class="input-area">
-                    <!-- NEW: Wrapped input in a div for positioning suggestions -->
                     <div class="input-wrapper">
                         <input type="text" id="item-input" placeholder="e.g., Rotisserie Chicken" autocomplete="off">
                         <div id="suggestions-container"></div>
@@ -435,12 +455,26 @@
                     <button class="sort-btn active" data-sort="added">Added</button>
                     <button class="sort-btn" data-sort="alpha">A-Z</button>
                     <button class="sort-btn" data-sort="category">Category</button>
+                    <!-- NEW: Clear list button -->
+                    <button class="sort-btn" id="clear-list-btn">Clear List</button>
                 </div>
                 <ul id="shopping-list"></ul>
                 <div id="total-cost">Total: $0.00</div>
             </div>
             <div id="history-content" class="tab-content">
                 <ul id="history-list"></ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- NEW: Confirmation Modal HTML -->
+    <div id="confirmation-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <h3>Are you sure?</h3>
+            <p>This will permanently delete all items from the shopping list.</p>
+            <div class="modal-buttons">
+                <button id="cancel-clear-btn" class="modal-btn">Cancel</button>
+                <button id="confirm-clear-btn" class="modal-btn">Clear List</button>
             </div>
         </div>
     </div>
