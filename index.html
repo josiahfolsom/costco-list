@@ -19,7 +19,7 @@
           projectId: "costco-list-data",
           storageBucket: "costco-list-data.appspot.com",
           messagingSenderId: "461334182204",
-          appId: "1:461334182204:web:9a0849745d41e8c41bc639",
+          appId: "1:461334182204:web:9a0849745d1b_c639",
           measurementId: "G-REJQK4B1G3"
         };
 
@@ -42,7 +42,7 @@
             const sortBar = document.querySelector('.sort-bar');
             const loadingIndicator = document.getElementById('loading');
             const appContent = document.getElementById('app-content');
-            const itemSuggestionsEl = document.getElementById('item-suggestions');
+            const suggestionsContainer = document.getElementById('suggestions-container'); // NEW: Custom suggestions box
 
             // --- App State ---
             let shoppingList = [];
@@ -90,7 +90,6 @@
                             priceHistory[doc.id] = data.entries;
                         }
                     });
-                    renderAutocomplete(); 
                     if (document.querySelector('.tab-btn[data-tab="history"]').classList.contains('active')) {
                         renderHistory();
                     }
@@ -117,6 +116,7 @@
                     itemInput.value = '';
                     priceInput.value = '';
                     quantityInput.value = '1';
+                    suggestionsContainer.innerHTML = ''; // Clear suggestions
                     itemInput.focus();
                 } catch (error) {
                     console.error("Error adding item: ", error);
@@ -153,16 +153,6 @@
             };
             
             // --- Rendering Functions ---
-            const renderAutocomplete = () => {
-                if (!itemSuggestionsEl) return;
-                itemSuggestionsEl.innerHTML = '';
-                Object.keys(priceHistory).forEach(itemName => {
-                    const option = document.createElement('option');
-                    option.value = itemName;
-                    itemSuggestionsEl.appendChild(option);
-                });
-            };
-
             const getCategory = (itemName) => {
                 const name = itemName.toLowerCase();
                 if (['apple', 'avocado', 'banana', 'berries', 'blueberries', 'broccoli', 'cabbage', 'carrots', 'celery', 'cherries', 'cucumber', 'dates', 'garlic', 'grapes', 'lemon', 'lettuce', 'mango', 'mushrooms', 'onions', 'orange', 'peaches', 'pepper', 'pineapple', 'potatoes', 'raspberries', 'salad', 'spinach', 'sprouts', 'strawberries', 'tomatoes', 'watermelon', 'zucchini'].some(k => name.includes(k))) return 'Produce';
@@ -299,13 +289,39 @@
                 input.addEventListener('keypress', (e) => { if (e.key === 'Enter') addItem(); });
             });
             itemInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') addItem(); });
+            
+            // **NEW**: Custom autocomplete logic
             itemInput.addEventListener('input', (e) => {
-                const selectedItemName = e.target.value;
-                if (priceHistory[selectedItemName]) {
-                    const latestEntry = priceHistory[selectedItemName][0];
-                    if (latestEntry && typeof latestEntry.price === 'number') {
-                        priceInput.value = latestEntry.price.toFixed(2);
-                    }
+                const value = e.target.value.toLowerCase();
+                suggestionsContainer.innerHTML = '';
+                if (!value) return;
+
+                const filteredItems = Object.keys(priceHistory)
+                    .filter(item => item.toLowerCase().includes(value))
+                    .slice(0, 5); // Show top 5 matches
+
+                filteredItems.forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = 'suggestion-item';
+                    div.textContent = item;
+                    div.addEventListener('click', () => {
+                        itemInput.value = item;
+                        if (priceHistory[item]) {
+                            const latestEntry = priceHistory[item][0];
+                            if (latestEntry && typeof latestEntry.price === 'number') {
+                                priceInput.value = latestEntry.price.toFixed(2);
+                            }
+                        }
+                        suggestionsContainer.innerHTML = '';
+                    });
+                    suggestionsContainer.appendChild(div);
+                });
+            });
+
+            // Hide suggestions when clicking elsewhere
+            document.addEventListener('click', (e) => {
+                if (e.target !== itemInput) {
+                    suggestionsContainer.innerHTML = '';
                 }
             });
             
@@ -331,11 +347,31 @@
         .tab-btn.active { color: #005f9e; border-bottom-color: #005f9e; font-weight: bold; }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
+        /* NEW: Wrapper for input and suggestions */
+        .input-wrapper { position: relative; }
         .input-area { display: grid; grid-template-columns: 1fr auto auto auto; gap: 10px; margin-bottom: 20px; align-items: center; }
         #item-input, #price-input, #quantity-input { padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 1em; }
         #price-input { width: 80px; }
         #quantity-input { width: 60px; }
         #add-btn { padding: 10px 15px; border: none; background-color: #e53238; color: white; border-radius: 4px; cursor: pointer; font-weight: bold; height: 100%; }
+        /* NEW: Custom suggestions styling */
+        #suggestions-container {
+            position: absolute;
+            background-color: white;
+            border: 1px solid #ddd;
+            border-top: none;
+            border-radius: 0 0 4px 4px;
+            width: 100%;
+            box-sizing: border-box;
+            z-index: 10;
+        }
+        .suggestion-item {
+            padding: 10px;
+            cursor: pointer;
+        }
+        .suggestion-item:hover {
+            background-color: #f0f0f0;
+        }
         .sort-bar { display: flex; gap: 10px; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #eee; }
         .sort-btn { padding: 8px 12px; border: 1px solid #ddd; background-color: #f8f9fa; border-radius: 4px; cursor: pointer; }
         .sort-btn.active { background-color: #005f9e; color: white; border-color: #005f9e; }
@@ -385,7 +421,11 @@
             </div>
             <div id="list-content" class="tab-content active">
                 <div class="input-area">
-                    <input type="text" id="item-input" list="item-suggestions" placeholder="e.g., Rotisserie Chicken">
+                    <!-- NEW: Wrapped input in a div for positioning suggestions -->
+                    <div class="input-wrapper">
+                        <input type="text" id="item-input" placeholder="e.g., Rotisserie Chicken" autocomplete="off">
+                        <div id="suggestions-container"></div>
+                    </div>
                     <input type="number" id="quantity-input" value="1" min="1" placeholder="Qty">
                     <input type="number" id="price-input" placeholder="Price" min="0" step="0.01">
                     <button id="add-btn">Add</button>
@@ -403,7 +443,6 @@
                 <ul id="history-list"></ul>
             </div>
         </div>
-        <datalist id="item-suggestions"></datalist>
     </div>
 </body>
 </html>
