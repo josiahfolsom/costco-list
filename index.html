@@ -5,12 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Costco Shopping List (Public)</title>
     
+    <!-- Chart.js library for price trend visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
     <!-- Firebase SDK Scripts -->
     <script type="module">
         // Import the functions you need from the SDKs
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, onSnapshot, addDoc, doc, updateDoc, deleteDoc, query, setDoc, runTransaction, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, onSnapshot, addDoc, doc, updateDoc, deleteDoc, query, setDoc, runTransaction, getDocs, writeBatch, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Your web app's Firebase configuration
         const firebaseConfig = {
@@ -43,16 +46,25 @@
             const loadingIndicator = document.getElementById('loading');
             const appContent = document.getElementById('app-content');
             const suggestionsContainer = document.getElementById('suggestions-container');
-            const clearListBtn = document.getElementById('clear-list-btn'); // NEW: Clear list button
-            const confirmationModal = document.getElementById('confirmation-modal'); // NEW: Confirmation modal
-            const confirmClearBtn = document.getElementById('confirm-clear-btn'); // NEW
-            const cancelClearBtn = document.getElementById('cancel-clear-btn'); // NEW
+            const clearListBtn = document.getElementById('clear-list-btn');
+            const confirmationModal = document.getElementById('confirmation-modal');
+            const confirmClearBtn = document.getElementById('confirm-clear-btn');
+            const cancelClearBtn = document.getElementById('cancel-clear-btn');
+            const chartContainer = document.getElementById('chart-container');
+            const priceChartCanvas = document.getElementById('price-chart');
+            const renameModal = document.getElementById('rename-modal');
+            const renameOldNameEl = document.getElementById('rename-old-name');
+            const renameNewNameInput = document.getElementById('rename-new-name-input');
+            const confirmRenameBtn = document.getElementById('confirm-rename-btn');
+            const cancelRenameBtn = document.getElementById('cancel-rename-btn');
 
             // --- App State ---
             let shoppingList = [];
             let priceHistory = {};
             let currentSort = 'added';
             let isAuthenticated = false;
+            let priceChart = null;
+            let itemToRename = null;
 
             // --- Helper Function ---
             const toTitleCase = (str) => {
@@ -94,9 +106,7 @@
                             priceHistory[doc.id] = data.entries;
                         }
                     });
-                    if (document.querySelector('.tab-btn[data-tab="history"]').classList.contains('active')) {
-                        renderHistory();
-                    }
+                    renderHistory();
                 });
             }
 
@@ -138,18 +148,12 @@
                 await deleteDoc(doc(db, 'public-list', itemId));
             };
 
-            // NEW: Function to clear the entire shopping list
             const clearList = async () => {
                 if (!isAuthenticated) return;
-                console.log("Clearing all items from the list...");
                 const listCollection = collection(db, 'public-list');
                 const listSnapshot = await getDocs(listCollection);
-                const deletePromises = [];
-                listSnapshot.forEach(doc => {
-                    deletePromises.push(deleteDoc(doc.ref));
-                });
+                const deletePromises = listSnapshot.docs.map(doc => deleteDoc(doc.ref));
                 await Promise.all(deletePromises);
-                console.log("List cleared.");
                 confirmationModal.classList.add('hidden');
             };
 
@@ -170,6 +174,34 @@
                     console.error("Price history transaction failed: ", e);
                 }
             };
+
+            const renameItemInDb = async (oldName, newName) => {
+                if (!oldName || !newName || oldName === newName || !isAuthenticated) return;
+                
+                const oldHistoryRef = doc(db, 'public-priceHistory', oldName);
+                const newHistoryRef = doc(db, 'public-priceHistory', newName);
+                
+                try {
+                    await runTransaction(db, async (transaction) => {
+                        const oldDoc = await transaction.get(oldHistoryRef);
+                        if (oldDoc.exists()) {
+                            transaction.set(newHistoryRef, oldDoc.data());
+                            transaction.delete(oldHistoryRef);
+                        }
+                    });
+                } catch (e) {
+                    console.error("Error renaming price history:", e);
+                    return;
+                }
+
+                const listQuery = query(collection(db, 'public-list'), where("name", "==", oldName));
+                const listSnapshot = await getDocs(listQuery);
+                const batch = writeBatch(db);
+                listSnapshot.forEach(doc => {
+                    batch.update(doc.ref, { name: newName });
+                });
+                await batch.commit();
+            };
             
             // --- Rendering Functions ---
             const getCategory = (itemName) => {
@@ -180,7 +212,7 @@
                 if (['butter', 'cheese', 'cottage cheese', 'cream cheese', 'creamer', 'dubliner', 'eggs', 'half n half', 'heavy cream', 'manchego', 'milk', 'romano', 'sour cream', 'yogurt', 'yoggies'].some(k => name.includes(k))) return 'Dairy & Eggs';
                 if (['frozen', 'frzn', 'ice cream', 'nuggets', 'pizza', 'popsicle', 'pot-stickers', 'ravioli', 'waffles', 'wontons'].some(k => name.includes(k))) return 'Frozen Foods';
                 if (['bars', 'cheez-its', 'chips', 'chomps', 'cookies', 'crackers', 'fig bar', 'goldfish', 'granola', 'jerky', 'nuts', 'popcorn', 'pretzels', 'seeds', 'snack'].some(k => name.includes(k))) return 'Snacks';
-                if (['bullion', 'brownie mix', 'cereal', 'chia', 'chocolate chips', 'cholula', 'cinnamon', 'coffee', 'curry', 'dressing', 'flour', 'honey', 'jelly', 'ketchup', 'mac & cheese', 'maple syrup', 'marinara', 'matcha', 'mayonnaise', 'mustard', 'nut butter', 'nutella', 'oats', 'olive oil', 'pancake mix', 'paprika', 'pasta', 'peanut butter', 'p pesto', 'pickles', 'ramen', 'rice', 'salt', 'sauce', 'seasoning', 'soy sauce', 'stock', 'sugar', 'taco seasoning', 'tomato sauce'].some(k => name.includes(k))) return 'Pantry';
+                if (['bullion', 'brownie mix', 'cereal', 'chia', 'chocolate chips', 'cholula', 'cinnamon', 'coffee', 'curry', 'dressing', 'flour', 'honey', 'jelly', 'ketchup', 'mac & cheese', 'maple syrup', 'marinara', 'matcha', 'mayonnaise', 'mustard', 'nut butter', 'nutella', 'oats', 'olive oil', 'pancake mix', 'paprika', 'pasta', 'peanut butter', 'pesto', 'pickles', 'ramen', 'rice', 'salt', 'sauce', 'seasoning', 'soy sauce', 'stock', 'sugar', 'taco seasoning', 'tomato sauce'].some(k => name.includes(k))) return 'Pantry';
                 if (['baby wipes', 'cleaner', 'detergent', 'diapers', 'dish soap', 'dishwasher', 'floss', 'flonase', 'hand soap', 'laundry', 'paper towels', 'plates', 'pull-ups', 'soap', 'stain remover', 'tissue', 'toilet paper', 'toothpaste', 'trash bags', 'ziploc'].some(k => name.includes(k))) return 'Household & Baby';
                 if (['body armor', 'celsius', 'coconut water', 'juice', 'spindrift', 'waterloo'].some(k => name.includes(k))) return 'Drinks';
                 return 'Miscellaneous';
@@ -192,10 +224,55 @@
                 document.querySelector(`.tab-btn[data-tab="${tabName}"]`).classList.add('active');
                 if (tabName === 'history') renderHistory();
             };
+
+            const renderPriceChart = (itemName) => {
+                if (priceChart) {
+                    priceChart.destroy();
+                }
+                const history = [...(priceHistory[itemName] || [])].reverse();
+                if (history.length < 2) {
+                    chartContainer.classList.add('hidden');
+                    return;
+                }
+                
+                const labels = history.map(entry => entry.date);
+                const data = history.map(entry => entry.price);
+
+                chartContainer.classList.remove('hidden');
+                const ctx = priceChartCanvas.getContext('2d');
+                priceChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: `Price of ${itemName}`,
+                            data: data,
+                            borderColor: '#005f9e',
+                            backgroundColor: 'rgba(0, 95, 158, 0.1)',
+                            fill: true,
+                            tension: 0.1
+                        }]
+                    },
+                    options: {
+                        scales: {
+                            y: {
+                                beginAtZero: false,
+                                ticks: {
+                                    callback: function(value) {
+                                        return '$' + value.toFixed(2);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            };
             
             const renderHistory = () => {
+                const selectedItemName = historyListEl.querySelector('.history-item.selected')?.dataset.itemName;
                 historyListEl.innerHTML = '';
                 const historyItems = Object.keys(priceHistory);
+
                 if (historyItems.length === 0) {
                     historyListEl.innerHTML = `<li class="empty-state">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
@@ -204,13 +281,37 @@
                     </li>`;
                     return;
                 }
+                
                 historyItems.sort().forEach(itemName => {
                     const latestEntry = priceHistory[itemName][0];
                     const li = document.createElement('li');
                     li.className = 'history-item';
-                    li.innerHTML = `<div class="history-item-name">${itemName}</div><div class="history-item-details">Latest: $${latestEntry.price.toFixed(2)} on ${latestEntry.date}</div>`;
+                    if (itemName === selectedItemName) {
+                        li.classList.add('selected');
+                    }
+                    li.dataset.itemName = itemName;
+                    li.innerHTML = `<div class="history-item-main">
+                                        <div class="history-item-name">${itemName}</div>
+                                        <div class="history-item-details">Latest: 
+                                            <span class="history-price" data-date="${latestEntry.date}">$${latestEntry.price.toFixed(2)}</span> on ${latestEntry.date}
+                                        </div>
+                                    </div>
+                                    <div class="history-item-actions">
+                                        <button class="history-action-btn rename-btn" title="Rename Item"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M5.433 13.917l1.262-3.155A4 4 0 017.58 9.42l6.92-6.918a2.121 2.121 0 013 3l-6.92 6.918c-.383.383-.84.685-1.343.886l-3.154 1.262a.5.5 0 01-.65-.65z" /><path d="M3.5 5.75c0-.69.56-1.25 1.25-1.25H10A.75.75 0 0010 3H4.75A2.75 2.75 0 002 5.75v9.5A2.75 2.75 0 004.75 18h9.5A2.75 2.75 0 0017 15.25V10a.75.75 0 00-1.5 0v5.25c0 .69-.56 1.25-1.25 1.25h-9.5c-.69 0-1.25-.56-1.25-1.25v-9.5z" /></svg></button>
+                                        <button class="history-action-btn update-price-btn" title="Update Latest Price"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M10.75 2.75a.75.75 0 00-1.5 0v8.586l-1.22-1.22a.75.75 0 00-1.06 1.06l2.5 2.5a.75.75 0 001.06 0l2.5-2.5a.75.75 0 10-1.06-1.06l-1.22 1.22V2.75z" /><path d="M3 13.25a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.25 18.5h11.5A2.75 2.75 0 0018.5 15.75v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.25c-.69 0-1.25-.56-1.25-1.25v-2.5z" /></svg></button>
+                                    </div>`;
                     historyListEl.appendChild(li);
                 });
+
+                if (selectedItemName) {
+                    const selectedLi = historyListEl.querySelector(`[data-item-name="${selectedItemName}"]`);
+                    if (selectedLi) {
+                        const chartWrapper = document.getElementById('chart-wrapper-li') || document.createElement('li');
+                        chartWrapper.id = 'chart-wrapper-li';
+                        chartWrapper.appendChild(chartContainer);
+                        selectedLi.after(chartWrapper);
+                    }
+                }
             };
 
             const renderList = () => {
@@ -273,9 +374,11 @@
                         priceInputEl.type = 'number';
                         priceInputEl.className = 'item-price-input';
                         priceInputEl.value = item.price.toFixed(2);
+                        priceInputEl.step = '0.01';
                         priceContainer.replaceChild(priceInputEl, priceSpan);
                         priceInputEl.focus();
-
+                        priceInputEl.select(); // **FIX**: Highlight text on click
+                        
                         const savePrice = () => {
                             const newPrice = parseFloat(priceInputEl.value) || 0;
                             updateItem(item.id, { price: newPrice });
@@ -354,7 +457,6 @@
                 }
             });
 
-            // NEW: Event listeners for the confirmation modal
             clearListBtn.addEventListener('click', () => {
                 confirmationModal.classList.remove('hidden');
             });
@@ -362,6 +464,78 @@
                 confirmationModal.classList.add('hidden');
             });
             confirmClearBtn.addEventListener('click', clearList);
+
+            historyListEl.addEventListener('click', (e) => {
+                const itemEl = e.target.closest('.history-item');
+                const renameBtn = e.target.closest('.rename-btn');
+                const updatePriceBtn = e.target.closest('.update-price-btn');
+
+                if (renameBtn) {
+                    e.stopPropagation();
+                    itemToRename = itemEl.dataset.itemName;
+                    renameOldNameEl.textContent = itemToRename;
+                    renameNewNameInput.value = itemToRename;
+                    renameModal.classList.remove('hidden');
+                    renameNewNameInput.focus();
+                    return;
+                }
+
+                if (updatePriceBtn) {
+                    e.stopPropagation();
+                    const priceSpan = itemEl.querySelector('.history-price');
+                    if(priceSpan) {
+                        const currentPrice = parseFloat(priceSpan.textContent.replace('$', ''));
+                        const priceInputEl = document.createElement('input');
+                        priceInputEl.type = 'number';
+                        priceInputEl.className = 'history-price-input';
+                        priceInputEl.value = currentPrice.toFixed(2);
+                        priceInputEl.step = '0.01';
+                        priceSpan.replaceWith(priceInputEl);
+                        priceInputEl.focus();
+                        priceInputEl.select(); // **FIX**: Highlight text on click
+
+                        const saveHistoryPrice = () => {
+                            const newPrice = parseFloat(priceInputEl.value) || 0;
+                            updatePriceHistory(itemEl.dataset.itemName, newPrice);
+                        };
+                        priceInputEl.addEventListener('blur', saveHistoryPrice);
+                        priceInputEl.addEventListener('keypress', (e) => {
+                            if (e.key === 'Enter') priceInputEl.blur();
+                        });
+                    }
+                    return;
+                }
+                
+                if (itemEl) {
+                    const wasSelected = itemEl.classList.contains('selected');
+                    const existingChartWrapper = document.getElementById('chart-wrapper-li');
+                    if (existingChartWrapper) existingChartWrapper.remove();
+                    historyListEl.querySelectorAll('.history-item').forEach(el => el.classList.remove('selected'));
+                    chartContainer.classList.add('hidden');
+
+                    if (!wasSelected) {
+                        itemEl.classList.add('selected');
+                        const chartWrapper = document.createElement('li');
+                        chartWrapper.id = 'chart-wrapper-li';
+                        chartWrapper.appendChild(chartContainer);
+                        itemEl.after(chartWrapper);
+                        renderPriceChart(itemEl.dataset.itemName);
+                    }
+                }
+            });
+
+            cancelRenameBtn.addEventListener('click', () => {
+                renameModal.classList.add('hidden');
+                itemToRename = null;
+            });
+            confirmRenameBtn.addEventListener('click', () => {
+                const newName = toTitleCase(renameNewNameInput.value.trim());
+                if (itemToRename && newName) {
+                    renameItemInDb(itemToRename, newName);
+                }
+                renameModal.classList.add('hidden');
+                itemToRename = null;
+            });
         });
     </script>
     <style>
@@ -387,7 +561,7 @@
         .sort-bar { display: flex; gap: 10px; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #eee; align-items: center; }
         .sort-btn { padding: 8px 12px; border: 1px solid #ddd; background-color: #f8f9fa; border-radius: 4px; cursor: pointer; }
         .sort-btn.active { background-color: #005f9e; color: white; border-color: #005f9e; }
-        #clear-list-btn { margin-left: auto; background-color: #6c757d; color: white; } /* NEW */
+        #clear-list-btn { margin-left: auto; background-color: #6c757d; color: white; }
         #shopping-list, #history-list { list-style: none; padding: 0; margin: 0; }
         .category-header { font-weight: bold; color: #005f9e; background-color: #f4f4f9; padding: 8px 10px; margin-top: 10px; border-radius: 4px; }
         .list-item { display: flex; align-items: center; padding: 12px 10px; border-bottom: 1px solid #eee; font-size: 1.1em; }
@@ -403,22 +577,32 @@
         .delete-btn svg { width: 20px; height: 20px; }
         .delete-btn:hover { color: #e53238; }
         #total-cost { text-align: right; font-size: 1.4em; font-weight: bold; margin-top: 20px; color: #005f9e; }
-        .history-item { padding: 10px; border-bottom: 1px solid #eee; }
+        .history-item { padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; transition: background-color 0.2s; border-radius: 4px; display: flex; align-items: center; }
+        .history-item-main { flex-grow: 1; }
+        .history-item:hover, .history-item.selected { background-color: #eef7ff; }
         .history-item-name { font-weight: bold; font-size: 1.1em; }
         .history-item-details { font-size: 0.9em; color: #666; }
+        .history-price { font-weight: bold; }
+        .history-price-input { width: 60px; font-size: 0.9em; }
+        .history-item-actions { display: flex; gap: 8px; }
+        .history-action-btn { background: none; border: 1px solid #ddd; border-radius: 50%; cursor: pointer; padding: 5px; display: flex; align-items: center; justify-content: center; }
+        .history-action-btn:hover { background-color: #e9ecef; }
+        .history-action-btn svg { width: 16px; height: 16px; color: #555; }
         #loading { text-align: center; padding: 40px; font-size: 1.2em; color: #666; }
         .empty-state { text-align: center; padding: 40px 20px; color: #888; }
         .empty-state svg { width: 48px; height: 48px; margin-bottom: 10px; color: #ccc; }
         .empty-state h3 { margin: 0 0 5px 0; color: #666; }
         .empty-state p { margin: 0; font-size: 0.9em; }
-        /* NEW: Styles for confirmation modal */
         .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: center; z-index: 20; }
-        .modal-content { background: white; padding: 25px; border-radius: 8px; text-align: center; max-width: 300px; }
+        .modal-content { background: white; padding: 25px; border-radius: 8px; text-align: center; max-width: 300px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        .modal-content input { width: 100%; padding: 10px; margin-top: 10px; box-sizing: border-box; border-radius: 4px; border: 1px solid #ddd; }
         .modal-buttons { margin-top: 20px; display: flex; justify-content: center; gap: 10px; }
-        .modal-btn { padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
-        #confirm-clear-btn { background-color: #e53238; color: white; }
-        #cancel-clear-btn { background-color: #6c757d; color: white; }
+        .modal-btn { padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        #confirm-clear-btn, #confirm-rename-btn { background-color: #e53238; color: white; }
+        #cancel-clear-btn, #cancel-rename-btn { background-color: #6c757d; color: white; }
         .hidden { display: none; }
+        #chart-container { margin-top: 10px; padding: 10px; background-color: #fafafa; border-radius: 4px; }
+        #chart-wrapper-li { list-style-type: none; padding: 0 10px 10px 10px; }
 
         @media (max-width: 500px) {
             body { padding: 10px; }
@@ -455,7 +639,6 @@
                     <button class="sort-btn active" data-sort="added">Added</button>
                     <button class="sort-btn" data-sort="alpha">A-Z</button>
                     <button class="sort-btn" data-sort="category">Category</button>
-                    <!-- NEW: Clear list button -->
                     <button class="sort-btn" id="clear-list-btn">Clear List</button>
                 </div>
                 <ul id="shopping-list"></ul>
@@ -467,7 +650,10 @@
         </div>
     </div>
 
-    <!-- NEW: Confirmation Modal HTML -->
+    <div id="chart-container" class="hidden">
+        <canvas id="price-chart"></canvas>
+    </div>
+
     <div id="confirmation-modal" class="modal-overlay hidden">
         <div class="modal-content">
             <h3>Are you sure?</h3>
@@ -475,6 +661,18 @@
             <div class="modal-buttons">
                 <button id="cancel-clear-btn" class="modal-btn">Cancel</button>
                 <button id="confirm-clear-btn" class="modal-btn">Clear List</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="rename-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <h3>Rename Item</h3>
+            <p>Enter the new name for "<strong id="rename-old-name"></strong>".</p>
+            <input type="text" id="rename-new-name-input" placeholder="New item name">
+            <div class="modal-buttons">
+                <button id="cancel-rename-btn" class="modal-btn">Cancel</button>
+                <button id="confirm-rename-btn" class="modal-btn">Save</button>
             </div>
         </div>
     </div>
