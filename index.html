@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Costco Shopping List (Public)</title>
+    <title>Costco Shopping List</title>
     
     <!-- Chart.js library for price trend visualization -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -57,6 +57,12 @@
             const renameNewNameInput = document.getElementById('rename-new-name-input');
             const confirmRenameBtn = document.getElementById('confirm-rename-btn');
             const cancelRenameBtn = document.getElementById('cancel-rename-btn');
+            const locationSelect = document.getElementById('location-select');
+            const addLocationBtn = document.getElementById('add-location-btn');
+            const addLocationModal = document.getElementById('add-location-modal');
+            const newLocationNameInput = document.getElementById('new-location-name-input');
+            const confirmAddLocationBtn = document.getElementById('confirm-add-location-btn');
+            const cancelAddLocationBtn = document.getElementById('cancel-add-location-btn');
 
             // --- App State ---
             let shoppingList = [];
@@ -65,6 +71,8 @@
             let isAuthenticated = false;
             let priceChart = null;
             let itemToRename = null;
+            let currentLocation = null;
+            let listeners = [];
 
             // --- Helper Function ---
             const toTitleCase = (str) => {
@@ -78,7 +86,7 @@
                     isAuthenticated = true;
                     loadingIndicator.style.display = 'none';
                     appContent.style.display = 'block';
-                    setupRealtimeListeners();
+                    loadLocations();
                 } else {
                     signInAnonymously(auth).catch(error => {
                         console.error("Anonymous sign-in failed:", error);
@@ -87,18 +95,52 @@
                 }
             });
 
+            // --- Location Management ---
+            const loadLocations = async () => {
+                const locationsQuery = query(collection(db, 'locations'));
+                onSnapshot(locationsQuery, (snapshot) => {
+                    const locations = snapshot.docs.map(doc => doc.id).sort();
+                    locationSelect.innerHTML = '';
+                    locations.forEach(loc => {
+                        const option = document.createElement('option');
+                        option.value = loc;
+                        option.textContent = loc;
+                        locationSelect.appendChild(option);
+                    });
+
+                    const lastLocation = localStorage.getItem('costco-list-location');
+                    if (lastLocation && locations.includes(lastLocation)) {
+                        locationSelect.value = lastLocation;
+                    }
+                    
+                    if (locations.length > 0) {
+                        setCurrentLocation(locationSelect.value);
+                    }
+                });
+            };
+
+            const setCurrentLocation = (locationName) => {
+                if (currentLocation === locationName) return;
+                currentLocation = locationName;
+                localStorage.setItem('costco-list-location', locationName);
+                setupRealtimeListeners();
+            };
+
             // --- Real-time Data Listeners ---
             function setupRealtimeListeners() {
-                if (!isAuthenticated) return;
+                listeners.forEach(unsubscribe => unsubscribe());
+                listeners = [];
 
-                const listQuery = query(collection(db, 'public-list'));
-                onSnapshot(listQuery, (snapshot) => {
+                if (!isAuthenticated || !currentLocation) return;
+
+                const listQuery = query(collection(db, 'locations', currentLocation, 'list'));
+                const listUnsubscribe = onSnapshot(listQuery, (snapshot) => {
                     shoppingList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     renderList();
                 });
 
-                const historyQuery = query(collection(db, 'public-priceHistory'));
-                onSnapshot(historyQuery, (snapshot) => {
+                const historyQuery = query(collection(db, 'locations', currentLocation, 'priceHistory'));
+                const historyUnsubscribe = onSnapshot(historyQuery, (snapshot) => {
                     priceHistory = {};
                     snapshot.docs.forEach(doc => {
                         const data = doc.data();
@@ -108,18 +150,20 @@
                     });
                     renderHistory();
                 });
+                
+                listeners.push(listUnsubscribe, historyUnsubscribe);
             }
 
             // --- Firestore Data Functions ---
             const addItem = async () => {
                 const rawItemName = itemInput.value.trim();
-                if (!rawItemName || !isAuthenticated) return;
+                if (!rawItemName || !isAuthenticated || !currentLocation) return;
                 const itemName = toTitleCase(rawItemName);
                 const itemPrice = parseFloat(priceInput.value) || 0;
                 const itemQuantity = parseInt(quantityInput.value, 10) || 1;
 
                 try {
-                    await addDoc(collection(db, 'public-list'), {
+                    await addDoc(collection(db, 'locations', currentLocation, 'list'), {
                         dateAdded: Date.now(),
                         name: itemName,
                         price: itemPrice,
@@ -138,19 +182,19 @@
             };
             
             const updateItem = async (itemId, updatedData) => {
-                if (!isAuthenticated) return;
-                const itemRef = doc(db, 'public-list', itemId);
+                if (!isAuthenticated || !currentLocation) return;
+                const itemRef = doc(db, 'locations', currentLocation, 'list', itemId);
                 await updateDoc(itemRef, updatedData);
             };
 
             const deleteItem = async (itemId) => {
-                if (!isAuthenticated) return;
-                await deleteDoc(doc(db, 'public-list', itemId));
+                if (!isAuthenticated || !currentLocation) return;
+                await deleteDoc(doc(db, 'locations', currentLocation, 'list', itemId));
             };
 
             const clearList = async () => {
-                if (!isAuthenticated) return;
-                const listCollection = collection(db, 'public-list');
+                if (!isAuthenticated || !currentLocation) return;
+                const listCollection = collection(db, 'locations', currentLocation, 'list');
                 const listSnapshot = await getDocs(listCollection);
                 const deletePromises = listSnapshot.docs.map(doc => deleteDoc(doc.ref));
                 await Promise.all(deletePromises);
@@ -158,8 +202,8 @@
             };
 
             const updatePriceHistory = async (itemName, newPrice) => {
-                if (newPrice <= 0 || !isAuthenticated) return;
-                const historyRef = doc(db, 'public-priceHistory', itemName);
+                if (newPrice <= 0 || !isAuthenticated || !currentLocation) return;
+                const historyRef = doc(db, 'locations', currentLocation, 'priceHistory', itemName);
                 try {
                     await runTransaction(db, async (transaction) => {
                         const historyDoc = await transaction.get(historyRef);
@@ -174,12 +218,31 @@
                     console.error("Price history transaction failed: ", e);
                 }
             };
+            
+            const editPriceHistoryEntry = async (itemName, date, newPrice) => {
+                if (newPrice < 0 || !isAuthenticated || !currentLocation) return;
+                const historyRef = doc(db, 'locations', currentLocation, 'priceHistory', itemName);
+                try {
+                    await runTransaction(db, async (transaction) => {
+                        const historyDoc = await transaction.get(historyRef);
+                        if (!historyDoc.exists()) return;
+                        const currentHistory = historyDoc.data().entries;
+                        const entryIndex = currentHistory.findIndex(entry => entry.date === date);
+                        if (entryIndex > -1) {
+                            currentHistory[entryIndex].price = newPrice;
+                            transaction.set(historyRef, { entries: currentHistory });
+                        }
+                    });
+                } catch (e) {
+                    console.error("Price history edit transaction failed: ", e);
+                }
+            };
 
             const renameItemInDb = async (oldName, newName) => {
-                if (!oldName || !newName || oldName === newName || !isAuthenticated) return;
+                if (!oldName || !newName || oldName === newName || !isAuthenticated || !currentLocation) return;
                 
-                const oldHistoryRef = doc(db, 'public-priceHistory', oldName);
-                const newHistoryRef = doc(db, 'public-priceHistory', newName);
+                const oldHistoryRef = doc(db, 'locations', currentLocation, 'priceHistory', oldName);
+                const newHistoryRef = doc(db, 'locations', currentLocation, 'priceHistory', newName);
                 
                 try {
                     await runTransaction(db, async (transaction) => {
@@ -194,7 +257,7 @@
                     return;
                 }
 
-                const listQuery = query(collection(db, 'public-list'), where("name", "==", oldName));
+                const listQuery = query(collection(db, 'locations', currentLocation, 'list'), where("name", "==", oldName));
                 const listSnapshot = await getDocs(listQuery);
                 const batch = writeBatch(db);
                 listSnapshot.forEach(doc => {
@@ -377,7 +440,7 @@
                         priceInputEl.step = '0.01';
                         priceContainer.replaceChild(priceInputEl, priceSpan);
                         priceInputEl.focus();
-                        priceInputEl.select(); // **FIX**: Highlight text on click
+                        priceInputEl.select();
                         
                         const savePrice = () => {
                             const newPrice = parseFloat(priceInputEl.value) || 0;
@@ -492,7 +555,7 @@
                         priceInputEl.step = '0.01';
                         priceSpan.replaceWith(priceInputEl);
                         priceInputEl.focus();
-                        priceInputEl.select(); // **FIX**: Highlight text on click
+                        priceInputEl.select();
 
                         const saveHistoryPrice = () => {
                             const newPrice = parseFloat(priceInputEl.value) || 0;
@@ -536,12 +599,35 @@
                 renameModal.classList.add('hidden');
                 itemToRename = null;
             });
+            
+            locationSelect.addEventListener('change', (e) => {
+                setCurrentLocation(e.target.value);
+            });
+            
+            addLocationBtn.addEventListener('click', () => {
+                addLocationModal.classList.remove('hidden');
+                newLocationNameInput.focus();
+            });
+            cancelAddLocationBtn.addEventListener('click', () => {
+                addLocationModal.classList.add('hidden');
+            });
+            confirmAddLocationBtn.addEventListener('click', async () => {
+                const newLocation = toTitleCase(newLocationNameInput.value.trim());
+                if (newLocation) {
+                    await setDoc(doc(db, 'locations', newLocation), { created: Date.now() });
+                    newLocationNameInput.value = '';
+                    addLocationModal.classList.add('hidden');
+                }
+            });
         });
     </script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f4f9; color: #333; margin: 0; padding: 20px; display: flex; justify-content: center; }
         .container { width: 100%; max-width: 600px; background: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
         h1 { color: #005f9e; text-align: center; margin-top: 0; }
+        .location-bar { display: flex; gap: 10px; margin-bottom: 15px; align-items: center; }
+        #location-select { flex-grow: 1; padding: 8px; border-radius: 4px; border: 1px solid #ddd; font-size: 1em; }
+        #add-location-btn { padding: 8px 12px; font-size: 1.2em; }
         .tab-nav { display: flex; border-bottom: 2px solid #eee; margin-bottom: 20px; }
         .tab-btn { flex-grow: 1; padding: 10px 15px; border: none; background-color: transparent; cursor: pointer; font-size: 1.1em; color: #666; border-bottom: 3px solid transparent; transition: color 0.2s, border-color 0.2s; }
         .tab-btn.active { color: #005f9e; border-bottom-color: #005f9e; font-weight: bold; }
@@ -598,8 +684,8 @@
         .modal-content input { width: 100%; padding: 10px; margin-top: 10px; box-sizing: border-box; border-radius: 4px; border: 1px solid #ddd; }
         .modal-buttons { margin-top: 20px; display: flex; justify-content: center; gap: 10px; }
         .modal-btn { padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        #confirm-clear-btn, #confirm-rename-btn { background-color: #e53238; color: white; }
-        #cancel-clear-btn, #cancel-rename-btn { background-color: #6c757d; color: white; }
+        #confirm-clear-btn, #confirm-rename-btn, #confirm-add-location-btn { background-color: #e53238; color: white; }
+        #cancel-clear-btn, #cancel-rename-btn, #cancel-add-location-btn { background-color: #6c757d; color: white; }
         .hidden { display: none; }
         #chart-container { margin-top: 10px; padding: 10px; background-color: #fafafa; border-radius: 4px; }
         #chart-wrapper-li { list-style-type: none; padding: 0 10px 10px 10px; }
@@ -620,6 +706,11 @@
         <div id="loading">Connecting to your list...</div>
         
         <div id="app-content" style="display: none;">
+            <div class="location-bar">
+                <select id="location-select"></select>
+                <button id="add-location-btn" class="sort-btn">+</button>
+            </div>
+
             <div class="tab-nav">
                 <button class="tab-btn active" data-tab="list">Shopping List</button>
                 <button class="tab-btn" data-tab="history">Price History</button>
@@ -673,6 +764,18 @@
             <div class="modal-buttons">
                 <button id="cancel-rename-btn" class="modal-btn">Cancel</button>
                 <button id="confirm-rename-btn" class="modal-btn">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="add-location-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <h3>Add New Location</h3>
+            <p>Enter the name for the new shopping list (e.g., "City, ST").</p>
+            <input type="text" id="new-location-name-input" placeholder="Location Name">
+            <div class="modal-buttons">
+                <button id="cancel-add-location-btn" class="modal-btn">Cancel</button>
+                <button id="confirm-add-location-btn" class="modal-btn">Add</button>
             </div>
         </div>
     </div>
